@@ -1,0 +1,184 @@
+/*****************************************************************************
+ * name:   pury_open_light.ino
+ * author: Erik Rockoff
+ * date:   02-05-2020
+ * vesion: 1.0
+ * 
+ * pin setting for Infineon XMC2GO controller
+ * 
+ * visit the project documentation on:
+ *https://www.thingiverse.com/thing:4145967
+ * 
+ * short description: Control for the PURY system. Main function is the
+ * purification and cleaning of water by using a UVC LED. The cleaning
+ * process can be stared by pressing the 'in_clean' button and is displayed by
+ * the blinking red LED. The finished process is displayed by flashing green
+ * LED for 5 sec. Additional finction for mobile lighting application is the
+ * integrated RGB LED ring. You can change the LED effects like you want
+ * according the WS2812FX libary, see:
+ * https://github.com/kitesurfer1404/WS2812FX
+ ****************************************************************************/
+
+#include <WS2812FX.h>
+
+#define LED_COUNT 12 /*number of LEDs in LED ring*/
+#define LED_PIN 6
+#define CLEANING_TIME 90000 /*ms*/
+#define AMOUNT_LED_STATES 3/*you can set as many led states as you want*/
+
+/*LED ring setting*/
+WS2812FX ws2812fx = WS2812FX(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
+
+/*pin setting*/
+const int in_clean = 2; /* button*/
+const int in_ring =  10;/* button*/
+
+const int out_red =  3; /* RGB LED red LED*/
+const int out_uvc =  4; /* UVC LED*/
+const int out_green =  8; /* RGB LED green LED*/
+
+/*declare state variables*/
+long ring_nextWakeUp;
+long cleaning_nextWakeUp;
+long redLED_nextWakeUp;
+int  state_ring = AMOUNT_LED_STATES; /*set to hightest state at beginning*/
+boolean state_cleaning = 0;
+boolean state_redLED = 0;
+boolean buttonStateFalling[2] = {1,1};
+boolean lastButtonStateFalling[2] = {1,1};
+
+/*declare time variables*/
+unsigned long millisPrevious[2];
+unsigned long cleaning_startTime;
+unsigned long nextBlinkTime;
+unsigned long greenLED_turnOffTime;
+
+void setup() {
+  /*initialize outputs*/
+  pinMode(ledPin, OUTPUT);
+  pinMode(out_red, OUTPUT);
+  pinMode(out_uvc, OUTPUT);
+  pinMode(out_red, OUTPUT);
+  pinMode(out_green, OUTPUT);
+  
+  /*initialize inputs*/
+  pinMode(in_clean, INPUT);
+  pinMode(in_ring, INPUT);
+
+  /*initalize time variables*/
+  unsigned long now = millis();
+  ring_nextWakeUp = now;
+  cleaning_nextWakeUp = now;
+  redLED_nextWakeUp = now;
+  nextBlinkTime = now;
+  greenLED_turnOffTime = now;
+
+  /*initalize LED ring*/
+  ws2812fx.init();
+  ws2812fx.setBrightness(255);
+  ws2812fx.setSpeed(200);
+}
+
+void loop() {
+  ws2812fx.service();
+  long currentTime = millis();
+  /*check for wake up*/
+  long nextWakeUpRing = Ring_doStep(currentTime);
+  long nextWakeUpCleaning = cleaning_doStep(currentTime);
+  long nextWakeUpredLED = redLED_doStep(currentTime);
+}
+
+long Ring_doStep(long currentMillis){
+  if(currentMillis > ring_nextWakeUp){/*wake up*/
+    /*detect falling flank*/
+    buttonStateFalling[0] = digitalRead(in_ring);
+    if ((buttonStateFalling[0] == HIGH) && (lastButtonStateFalling[0] == LOW)) {
+      millisPrevious[0] = currentMillis;
+    } else if ((buttonStateFalling[0] == LOW) && (lastButtonStateFalling[0] == HIGH) ) {
+        state_ring = (state_ring + 1) % AMOUNT_LED_STATES; /*step one LED state
+        you can set as much led effects as you want accourding the WS2812 effects.
+        See https://github.com/kitesurfer1404/WS2812FX
+        */
+        switch (state_ring){
+          case 0: /*dark*/
+          ws2812fx.stop();
+          break;
+          case 1: /*current white*/
+          ws2812fx.setColor(WHITE);
+          ws2812fx.setMode(FX_MODE_STATIC);
+          ws2812fx.start();
+          break;
+          case 2:
+          ws2812fx.setMode(FX_MODE_RAINBOW_CYCLE);
+          ws2812fx.start();
+          break;
+        }
+    }
+    lastButtonStateFalling[0] = buttonStateFalling[0];
+    ring_nextWakeUp = currentMillis + 50;
+  }
+  return ring_nextWakeUp;
+}
+
+long cleaning_doStep(long currentMillis){
+  if(currentMillis > cleaning_nextWakeUp){/*wake up*/
+    if(state_cleaning == 1){
+      if(currentMillis >= cleaning_startTime + CLEANING_TIME){/*cleaning time over*/
+        stop_cleaning();
+      }
+    } else{
+      if(currentMillis > greenLED_turnOffTime){
+        digitalWrite(out_green,LOW); /*in case of start cleaning while green LED flashing*/
+      }
+    /*detect falling flank*/
+      buttonStateFalling[1] = digitalRead(in_clean);
+      if ((buttonStateFalling[1] == HIGH) && (lastButtonStateFalling[1] == LOW)) {
+        millisPrevious[1] = currentMillis;
+      } else if ((buttonStateFalling[1] == LOW) && (lastButtonStateFalling[1] == HIGH) ) {
+          start_cleaning();
+      }
+      lastButtonStateFalling[1] = buttonStateFalling[1];
+    }
+    cleaning_nextWakeUp = currentMillis + 50;
+  }
+  return cleaning_nextWakeUp;
+}
+
+long redLED_doStep(long currentMillis){
+  if(currentMillis > redLED_nextWakeUp){/*wake up*/
+    if(state_cleaning == 1){ /*then blink red*/
+      if(currentMillis > nextBlinkTime){
+        state_redLED = !state_redLED;
+        digitalWrite(out_red, state_redLED); 
+        nextBlinkTime = currentMillis + 500;
+      }
+    }else{
+      digitalWrite(out_red, LOW);
+    }
+    redLED_nextWakeUp = currentMillis + 200;
+  }
+  return redLED_nextWakeUp; 
+}
+
+void start_cleaning(){
+  digitalWrite(out_uvc, HIGH);
+  state_cleaning = 1;
+  cleaning_startTime = millis();
+  /*turn on red LED*/
+  state_redLED = 1;
+  digitalWrite(out_red, state_redLED);
+  nextBlinkTime = cleaning_startTime + 500;
+  /*turn off green LED*/
+  digitalWrite(out_green, LOW);
+}
+
+void stop_cleaning(){
+  digitalWrite(out_uvc, LOW);
+  state_cleaning = 0;
+  /*turn off red LED*/
+  state_redLED = 0;
+  digitalWrite(out_red, state_redLED);
+  /*turn on green LED*/
+  digitalWrite(out_green, HIGH);
+  greenLED_turnOffTime = millis() + 5000;
+}
